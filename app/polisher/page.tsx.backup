@@ -1,0 +1,190 @@
+"use client";
+
+import { useState } from "react";
+import Sidebar from "@/components/Sidebar";
+import LoadingSpinner from "@/components/LoadingSpinner";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
+import { Sparkles, Send, Upload as UploadIcon } from "lucide-react";
+
+export default function Polisher() {
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [polished, setPolished] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handlePolish = async () => {
+    if (!text.trim() && files.length === 0) {
+      setError("Vui lòng nhập văn bản hoặc tải lên tệp");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setPolished("");
+
+    try {
+      const formData = new FormData();
+      if (files.length > 0) {
+        files.forEach((file) => {
+          formData.append("files", file);
+        });
+      } else if (text.trim()) {
+        formData.append("request", JSON.stringify({ text }));
+      }
+
+      const response = await fetch("/api/polisher", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Không thể trau chuốt văn bản");
+      }
+
+      const data = await response.json();
+      setPolished(data.polished);
+    } catch (err) {
+      setError("Có lỗi xảy ra khi trau chuốt. Vui lòng thử lại.");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen">
+      <Sidebar />
+
+      <main className="flex-1 p-6">
+        <div className="max-w-4xl mx-auto">
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-1">
+              <Sparkles className="w-6 h-6 text-primary" />
+              <h1 className="text-2xl font-bold text-gray-900">Trau Chuốt Văn Bản</h1>
+            </div>
+            <p className="text-sm text-gray-600">
+              Biến văn bản thành Tiếng Anh chuyên nghiệp
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            {/* Text Input */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Văn Bản Gốc
+              </label>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Nhập văn bản..."
+                className="w-full h-32 p-3 text-sm border border-gray-300 rounded-lg focus:border-primary focus:outline-none resize-none"
+              />
+            </div>
+
+            {/* File Upload */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Hoặc Tải Lên Tệp ({files.length}/10)
+              </label>
+              
+              {/* File List */}
+              {files.length > 0 && (
+                <div className="mb-2 space-y-1">
+                  {files.map((file, idx) => (
+                    <div key={idx} className="flex items-center justify-between bg-pink-50 border border-pink-200 rounded px-2 py-1.5">
+                      <span className="text-xs text-gray-700 truncate flex-1">
+                        {idx + 1}. {file.name}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setFiles(files.filter((_, i) => i !== idx));
+                        }}
+                        className="ml-2 text-red-500 hover:text-red-700 font-bold"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {/* Add File Button */}
+              {files.length < 10 && (
+                <div className="relative border-2 border-dashed border-pink-200 rounded-lg p-3 hover:border-primary transition-colors cursor-pointer">
+                  <input
+                    type="file"
+                    onChange={(e) => {
+                      const newFile = e.target.files?.[0];
+                      if (newFile && files.length < 10) {
+                        setFiles([...files, newFile]);
+                        setText("");
+                      }
+                      e.target.value = "";
+                    }}
+                    accept=".pdf,.doc,.docx,.txt,.md"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="text-center">
+                    <UploadIcon className="w-5 h-5 text-primary mx-auto mb-1" />
+                    <p className="text-sm font-semibold text-gray-900">
+                      {files.length > 0 ? "Thêm tệp" : "Chọn tệp"}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      PDF, Word, TXT
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={handlePolish}
+              disabled={loading || (!text.trim() && files.length === 0)}
+              className="w-full bg-primary text-white py-2.5 rounded-lg font-semibold hover:bg-pink-600 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm"
+            >
+              {loading ? (
+                <>Đang Xử Lý...</>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  Trau Chuốt
+                </>
+              )}
+            </button>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
+
+            {loading && <LoadingSpinner />}
+
+            {polished && !loading && (
+              <div className="space-y-3">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900 mb-2">
+                    Kết Quả
+                  </h2>
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    <MarkdownRenderer content={polished} />
+                  </div>
+                </div>
+
+                {text && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <h3 className="text-sm font-semibold text-blue-900 mb-1">
+                      Văn Bản Gốc
+                    </h3>
+                    <p className="text-sm text-gray-700">{text}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
