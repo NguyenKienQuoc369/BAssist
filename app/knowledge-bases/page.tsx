@@ -60,15 +60,13 @@ export default function KnowledgeBases() {
     try {
       setCreatingKb(true);
       setError("");
-      const formData = new FormData();
-      formData.append(
-        "request",
-        JSON.stringify({ name: newKbName })
-      );
 
       const response = await fetch("/api/knowledge-bases/create", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: newKbName }),
       });
 
       if (!response.ok) {

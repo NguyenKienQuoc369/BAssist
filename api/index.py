@@ -581,15 +581,21 @@ async def list_knowledge_bases():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing knowledge bases: {str(e)}")
 
+class CreateKBRequest(BaseModel):
+    name: str
+
 @app.post("/api/knowledge-bases/create")
-async def create_knowledge_base(request: str = Form(None)):
+async def create_knowledge_base(kb_request: CreateKBRequest = None, request: str = Form(None)):
     """Create a new knowledge base"""
     try:
-        if not request:
+        # Support both JSON body and Form data
+        if kb_request:
+            kb_name = kb_request.name.strip()
+        elif request:
+            request_data = json.loads(request)
+            kb_name = request_data.get("name", "").strip()
+        else:
             raise HTTPException(status_code=400, detail="Please provide knowledge base name")
-        
-        request_data = json.loads(request)
-        kb_name = request_data.get("name", "").strip()
         
         if not kb_name:
             raise HTTPException(status_code=400, detail="Knowledge base name cannot be empty")
