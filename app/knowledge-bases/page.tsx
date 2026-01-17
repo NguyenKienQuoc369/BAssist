@@ -59,6 +59,7 @@ export default function KnowledgeBases() {
 
     try {
       setCreatingKb(true);
+      setError("");
       const formData = new FormData();
       formData.append(
         "request",
@@ -71,15 +72,16 @@ export default function KnowledgeBases() {
       });
 
       if (!response.ok) {
-        throw new Error("Không thể tạo kho dữ liệu");
+        const errorData = await response.json().catch(() => ({ detail: "Không thể tạo kho dữ liệu" }));
+        throw new Error(errorData.detail || "Không thể tạo kho dữ liệu");
       }
 
+      const result = await response.json();
       setNewKbName("");
       await loadKnowledgeBases();
-      setError("");
-    } catch (err) {
-      setError("Có lỗi xảy ra khi tạo kho dữ liệu");
-      console.error(err);
+    } catch (err: any) {
+      setError(err.message || "Có lỗi xảy ra khi tạo kho dữ liệu");
+      console.error("Create KB error:", err);
     } finally {
       setCreatingKb(false);
     }
