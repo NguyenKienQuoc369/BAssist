@@ -21,6 +21,7 @@ interface KnowledgeBase {
 
 export default function Chat() {
   const { isDark } = useTheme();
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || ""; // Allows pointing to external FastAPI when not served by Next dev
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -121,7 +122,7 @@ export default function Chat() {
         knowledge_base: selectedKb || undefined
       }));
 
-      const response = await fetch("/api/chat", {
+      const response = await fetch(`${apiBase}/api/chat`, {
         method: "POST",
         body: formData,
         signal: abortControllerRef.current.signal,
