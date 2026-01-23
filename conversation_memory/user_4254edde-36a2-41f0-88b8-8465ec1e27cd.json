@@ -1,0 +1,30 @@
+{
+  "user_id": "4254edde-36a2-41f0-88b8-8465ec1e27cd",
+  "updated_at": "2026-01-23T08:22:24.487974",
+  "conversations": [
+    {
+      "role": "user",
+      "content": "xin chao",
+      "timestamp": "2026-01-23T08:22:24.487506",
+      "kb": null
+    },
+    {
+      "role": "user",
+      "content": "xin chao",
+      "timestamp": "2026-01-23T08:22:24.487506",
+      "kb": null
+    },
+    {
+      "role": "assistant",
+      "content": "Chào bạn! Rất vui được trò chuyện cùng bạn. Tôi có thể giúp gì cho bạn hôm nay?",
+      "timestamp": "2026-01-23T08:22:24.487884",
+      "kb": null
+    },
+    {
+      "role": "assistant",
+      "content": "Chào bạn! Rất vui được trò chuyện cùng bạn. Tôi có thể giúp gì cho bạn hôm nay?",
+      "timestamp": "2026-01-23T08:22:24.487884",
+      "kb": null
+    }
+  ]
+}

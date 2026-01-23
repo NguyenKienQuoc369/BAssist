@@ -1,0 +1,30 @@
+{
+  "user_id": "e81b47b6-0260-49b2-a746-cf4f37e594aa",
+  "updated_at": "2026-01-23T08:23:19.040250",
+  "conversations": [
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": "2026-01-23T08:23:19.038176",
+      "kb": null
+    },
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": "2026-01-23T08:23:19.038176",
+      "kb": null
+    },
+    {
+      "role": "assistant",
+      "content": "Chào bạn! Rất vui được gặp lại bạn. 😊 Bạn có cần mình giúp gì không? Cứ thoải mái chia sẻ nhé!",
+      "timestamp": "2026-01-23T08:23:19.038547",
+      "kb": null
+    },
+    {
+      "role": "assistant",
+      "content": "Chào bạn! Rất vui được gặp lại bạn. 😊 Bạn có cần mình giúp gì không? Cứ thoải mái chia sẻ nhé!",
+      "timestamp": "2026-01-23T08:23:19.038547",
+      "kb": null
+    }
+  ]
+}

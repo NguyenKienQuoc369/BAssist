@@ -42,6 +42,11 @@ if not USE_DATABASE:
 # Initialize FastAPI app
 app = FastAPI(title="BAssist AI API")
 
+# Health check endpoint
+@app.get("/api/health")
+async def health():
+    return {"success": True, "status": "ok"}
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
