@@ -13,19 +13,28 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 import hashlib
-import psycopg2
-from psycopg2.extras import Json
 from contextlib import contextmanager
+
+# psycopg2 is optional; if missing we fall back to file storage
+try:
+    import psycopg2
+    from psycopg2.extras import Json
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+    psycopg2 = None  # type: ignore
+    Json = None  # type: ignore
+    print("[WARNING] psycopg2 not installed; database mode disabled. Install psycopg2-binary to enable.")
 
 # Constants
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {'.pdf', '.txt', '.md', '.docx', '.jpg', '.jpeg', '.png'}
 
 # Database Configuration (Vercel-compatible)
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL") if PSYCOPG2_AVAILABLE else None
 
-# Fallback to file-based storage if no database URL is provided
-USE_DATABASE = bool(DATABASE_URL)
+# Fallback to file-based storage if no database URL or driver is provided
+USE_DATABASE = bool(DATABASE_URL) and PSYCOPG2_AVAILABLE
 if not USE_DATABASE:
     CONVERSATION_STORAGE_DIR = Path("./conversation_memory")
     CONVERSATION_STORAGE_DIR.mkdir(exist_ok=True)
@@ -109,7 +118,7 @@ async def extract_text_from_file(file: UploadFile) -> str:
 @contextmanager
 def get_db_connection():
     """Get database connection (works on Vercel)"""
-    if not USE_DATABASE:
+    if not USE_DATABASE or not psycopg2:
         # Explicitly yield None so callers can gracefully fall back to file storage
         yield None
         return
@@ -787,7 +796,7 @@ async def chat(files: List[UploadFile] = File(None), request: str = Form(None)):
     - Semantic memory extraction
     """
     try:
-        # Parse request
+        # Parse request safely
         text = ""
         history = []
         kb_name = None
@@ -800,8 +809,9 @@ async def chat(files: List[UploadFile] = File(None), request: str = Form(None)):
                 history = request_data.get("history", [])
                 kb_name = request_data.get("knowledge_base")
                 session_id = request_data.get("session_id")
-            except:
+            except Exception as parse_error:
                 text = request.strip()
+                print(f"[WARNING] Failed to parse chat request JSON, using raw text. Error: {parse_error}")
         
         # Get or create persistent memory for this session
         memory = await get_memory(session_id)
@@ -880,7 +890,10 @@ Trả lời của bạn:"""
         import traceback
         print(f"[ERROR] Chat endpoint: {str(e)}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Lỗi trong chat: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "detail": f"Lỗi trong chat: {str(e)}"}
+        )
 
 @app.post("/api/personal-doctor")
 async def personal_doctor(
