@@ -1,6 +1,6 @@
-# 🎨 Consul - Visual Architecture & User Flow
+# Consul - Visual Architecture & User Flow
 
-## 🏗️ Application Architecture
+## Application Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -27,33 +27,33 @@
                  │ fetch('/api/...')
                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│         FASTAPI BACKEND (Python 3.9)                     │
+│         FASTAPI BACKEND (Python 3.9)                    │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │  /api/index.py - Serverless Functions          │   │
+│  │  /api/index.py - Serverless Functions            │   │
 │  │                                                  │   │
-│  │  ├── POST /api/study-buddy                     │   │
-│  │  ├── POST /api/polisher                        │   │
-│  │  ├── POST /api/shark-tank                      │   │
-│  │  ├── POST /api/subject-vault                   │   │
-│  │  └── POST /api/fact-check                      │   │
+│  │  ├── POST /api/study-buddy                       │   │
+│  │  ├── POST /api/polisher                          │   │
+│  │  ├── POST /api/shark-tank                        │   │
+│  │  ├── POST /api/subject-vault                     │   │
+│  │  └── POST /api/fact-check                        │   │
 │  └──────────────────────────────────────────────────┘   │
 └────────────────┬────────────────────────────────────────┘
                  │
                  │ API Calls
                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│              GOOGLE GEMINI AI                            │
-│         (google.generativeai library)                    │
-│                                                          │
-│  ├── gemini-pro (Text generation)                      │
-│  ├── google_search_retrieval (Fact checking)           │
-│  └── Embeddings (Vector store - future)                │
+│              GOOGLE GEMINI AI                           │
+│         (google.generativeai library)                   │
+│                                                         │
+│  ├── gemini-pro (Text generation)                       │
+│  ├── google_search_retrieval (Fact checking)            │
+│  └── Embeddings (Vector store - future)                 │ 
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔄 User Flow Diagrams
+## User Flow Diagrams
 
 ### Flow 1: Study Buddy (Summarization)
 
@@ -131,7 +131,7 @@ Success message         │    AI generates answer
 
 ---
 
-## 🎨 UI Component Structure
+##  UI Component Structure
 
 ```
 App Layout
@@ -171,7 +171,7 @@ App Layout
 
 ---
 
-## 🎨 Color Flow
+##  Color Flow
 
 ```
 Primary Color: #D63384 (Deep Pink)
@@ -201,7 +201,7 @@ White: #FFFFFF
 
 ---
 
-## 📱 Responsive Breakpoints
+##  Responsive Breakpoints
 
 ```
 Mobile          Tablet          Desktop
@@ -220,7 +220,7 @@ Everything      Layout          Layout
 
 ---
 
-## 🔐 Data Flow Security
+##  Data Flow Security
 
 ```
 Environment Variables (.env.local)
@@ -244,7 +244,7 @@ Response sent to frontend
 
 ---
 
-## ⚡ Performance Optimization
+## Performance Optimization
 
 ```
 User Request
@@ -277,7 +277,7 @@ User Request
 
 ---
 
-## 🚀 Deployment Flow
+##  Deployment Flow
 
 ```
 Local Development
@@ -311,7 +311,7 @@ Production URL
 
 ---
 
-## 🎯 Feature Decision Tree
+## Feature Decision Tree
 
 ```
 User opens Consul
@@ -332,7 +332,7 @@ User opens Consul
 
 ---
 
-## 📊 State Management
+## State Management
 
 ```
 Component State (useState)
@@ -359,7 +359,7 @@ UI Re-renders
 
 ---
 
-## 🎨 Animation Timeline
+## Animation Timeline
 
 ```
 Button Click
@@ -388,7 +388,7 @@ Button re-enabled
 
 ---
 
-## 🌈 User Experience Flow
+## User Experience Flow
 
 ```
 1. Landing Page
@@ -425,6 +425,3 @@ Button re-enabled
    └── Option to try again
 ```
 
----
-
-This visual guide helps understand the complete architecture and flow of the Consul application!

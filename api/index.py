@@ -8,6 +8,30 @@ import PyPDF2
 import io
 import json
 import mimetypes
+import pickle
+from pathlib import Path
+from datetime import datetime
+import uuid
+import hashlib
+import psycopg2
+from psycopg2.extras import Json
+from contextlib import contextmanager
+
+# Constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = {'.pdf', '.txt', '.md', '.docx', '.jpg', '.jpeg', '.png'}
+
+# Database Configuration (Vercel-compatible)
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://localhost/ailearning"  # Local fallback
+)
+
+# Fallback to file-based storage if no database
+USE_DATABASE = "postgresql://" in DATABASE_URL or "localhost" not in DATABASE_URL
+if not USE_DATABASE:
+    CONVERSATION_STORAGE_DIR = Path("./conversation_memory")
+    CONVERSATION_STORAGE_DIR.mkdir(exist_ok=True)
 
 # Initialize FastAPI app
 app = FastAPI(title="BAssist AI API")
@@ -42,13 +66,23 @@ class DocumentRequest(BaseModel):
 
 # Helper function to extract text from files
 async def extract_text_from_file(file: UploadFile) -> str:
-    """Extract text content from uploaded files"""
+    """Extract text content from uploaded files with validation"""
     try:
         content = await file.read()
+        
+        # Validate file size
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail=f"File quá lớn. Tối đa {MAX_FILE_SIZE / 1024 / 1024}MB")
+        
         filename = file.filename.lower()
+        ext = Path(filename).suffix
+        
+        # Validate extension
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Định dạng file không được hỗ trợ: {ext}")
         
         # PDF files
-        if filename.endswith('.pdf'):
+        if ext == '.pdf':
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
             text = ""
             for page in pdf_reader.pages:
@@ -56,18 +90,359 @@ async def extract_text_from_file(file: UploadFile) -> str:
             return text
         
         # Text files
-        elif filename.endswith(('.txt', '.md', '.docx')):
+        elif ext in ('.txt', '.md', '.docx'):
             return content.decode('utf-8', errors='ignore')
         
-        # Image files - for now just return filename info
-        elif filename.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
-            return f"[Image file: {filename}]"
+        # Image files
+        elif ext in ('.jpg', '.jpeg', '.png'):
+            return f"[Tệp hình ảnh: {filename}]"
         
         # Default: try to decode as text
         else:
             return content.decode('utf-8', errors='ignore')
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Lỗi đọc tệp: {str(e)}")
+
+# Helper functions for context and prompt building
+
+# ==================== Database Connection ====================
+
+@contextmanager
+def get_db_connection():
+    """Get database connection (works on Vercel)"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require' if 'vercel' in DATABASE_URL else 'disable')
+        yield conn
+        conn.close()
+    except Exception as e:
+        print(f"[WARNING] Database connection failed: {e}")
+        yield None
+
+def init_database():
+    """Initialize database tables"""
+    try:
+        with get_db_connection() as conn:
+            if conn:
+                cursor = conn.cursor()
+                
+                # Sessions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS conversation_sessions (
+                        session_id VARCHAR(255) PRIMARY KEY,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        message_count INTEGER DEFAULT 0
+                    )
+                ''')
+                
+                # Messages table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS conversation_messages (
+                        id SERIAL PRIMARY KEY,
+                        session_id VARCHAR(255) NOT NULL,
+                        role VARCHAR(20),
+                        content TEXT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        kb_name VARCHAR(255),
+                        FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id) ON DELETE CASCADE
+                    )
+                ''')
+                
+                # AI Memory table (stores extracted user info: name, preferences, facts)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS ai_user_memory (
+                        id SERIAL PRIMARY KEY,
+                        session_id VARCHAR(255) NOT NULL,
+                        memory_key VARCHAR(255),
+                        memory_value TEXT,
+                        memory_type VARCHAR(50),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES conversation_sessions(session_id) ON DELETE CASCADE,
+                        UNIQUE(session_id, memory_key)
+                    )
+                ''')
+                
+                # Indexes
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON conversation_messages(session_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON conversation_messages(timestamp)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ai_memory_session ON ai_user_memory(session_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ai_memory_type ON ai_user_memory(memory_type)')
+                
+                conn.commit()
+                print("[INFO] Database tables initialized")
+    except Exception as e:
+        print(f"[WARNING] Database init failed (will try fallback): {e}")
+
+# Initialize database on startup
+if USE_DATABASE:
+    init_database()
+
+# ==================== Conversation Memory System (Database-backed) ====================
+
+class ConversationMemory:
+    """Persistent conversation memory with database backend"""
+    
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        self.conversations: List[Dict] = []
+        if USE_DATABASE:
+            self._init_session()
+            self.load_memory()
+        else:
+            # Fallback to file-based
+            self.memory_file = CONVERSATION_STORAGE_DIR / f"user_{user_id}.json"
+            self.load_memory()
+    
+    def _init_session(self):
+        """Initialize session in database"""
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO conversation_sessions (session_id, updated_at)
+                        VALUES (%s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (session_id) DO UPDATE
+                        SET updated_at = CURRENT_TIMESTAMP
+                    ''', (self.user_id,))
+                    conn.commit()
+        except Exception as e:
+            print(f"[WARNING] Session init failed: {e}")
+    
+    def load_memory(self):
+        """Load conversation history from database or file"""
+        try:
+            if USE_DATABASE:
+                with get_db_connection() as conn:
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            SELECT role, content, timestamp, kb_name 
+                            FROM conversation_messages 
+                            WHERE session_id = %s 
+                            ORDER BY timestamp ASC
+                        ''', (self.user_id,))
+                        rows = cursor.fetchall()
+                        self.conversations = [
+                            {
+                                "role": row[0],
+                                "content": row[1],
+                                "timestamp": row[2].isoformat() if row[2] else None,
+                                "kb": row[3]
+                            }
+                            for row in rows
+                        ]
+                        print(f"[INFO] Loaded {len(self.conversations)} messages for user {self.user_id}")
+                    else:
+                        self._load_from_file()
+            else:
+                self._load_from_file()
+        except Exception as e:
+            print(f"[ERROR] Failed to load memory: {e}")
+            self.conversations = []
+    
+    def _load_from_file(self):
+        """Fallback: Load from file"""
+        try:
+            if self.memory_file.exists():
+                with open(self.memory_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.conversations = data.get("conversations", [])
+        except Exception as e:
+            print(f"[WARNING] Failed to load from file: {e}")
+            self.conversations = []
+    
+    def save_memory(self):
+        """Save conversation to database or file"""
+        try:
+            if USE_DATABASE:
+                with get_db_connection() as conn:
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            'UPDATE conversation_sessions SET updated_at = CURRENT_TIMESTAMP, message_count = %s WHERE session_id = %s',
+                            (len(self.conversations), self.user_id)
+                        )
+                        conn.commit()
+                    else:
+                        self._save_to_file()
+            else:
+                self._save_to_file()
+        except Exception as e:
+            print(f"[WARNING] Failed to save memory: {e}")
+            self._save_to_file()
+    
+    def _save_to_file(self):
+        """Fallback: Save to file"""
+        try:
+            with open(self.memory_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "user_id": self.user_id,
+                    "updated_at": datetime.now().isoformat(),
+                    "conversations": self.conversations
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[ERROR] Failed to save to file: {e}")
+    
+    def add_message(self, role: str, content: str, kb_name: Optional[str] = None):
+        """Add message to history"""
+        try:
+            timestamp = datetime.now()
+            msg = {
+                "role": role,
+                "content": content,
+                "timestamp": timestamp.isoformat(),
+                "kb": kb_name
+            }
+            
+            if USE_DATABASE:
+                with get_db_connection() as conn:
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            INSERT INTO conversation_messages (session_id, role, content, timestamp, kb_name)
+                            VALUES (%s, %s, %s, %s, %s)
+                        ''', (self.user_id, role, content, timestamp, kb_name))
+                        conn.commit()
+                    else:
+                        self.conversations.append(msg)
+                        self._save_to_file()
+            else:
+                self.conversations.append(msg)
+                self._save_to_file()
+            
+            self.conversations.append(msg)
+            self.save_memory()
+        except Exception as e:
+            print(f"[WARNING] Failed to add message: {e}")
+            self.conversations.append(msg)
+            self._save_to_file()
+    
+    def get_recent_context(self, max_messages: int = 15) -> str:
+        """Get recent context for prompt"""
+        if not self.conversations:
+            return ""
+        
+        context = "📝 LỊCH SỬ CUỘC TRÒ CHUYỆN GẦN ĐÂY:\n"
+        for msg in self.conversations[-max_messages:]:
+            role = "👤 Bạn" if msg["role"] == "user" else "🤖 AI"
+            content = msg["content"][:300]
+            context += f"{role}: {content}\n\n"
+        
+        return context
+    
+    def get_all_messages(self) -> List[Dict]:
+        """Get all messages"""
+        return self.conversations
+
+conversation_memories: Dict[str, ConversationMemory] = {}
+
+async def get_memory(session_id: Optional[str]) -> ConversationMemory:
+    """Get or create conversation memory for a session"""
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    if session_id not in conversation_memories:
+        conversation_memories[session_id] = ConversationMemory(session_id)
+    
+    return conversation_memories[session_id]
+
+# ==================== AI User Memory Functions ====================
+
+async def save_ai_memory(session_id: str, key: str, value: str, memory_type: str = "user_info"):
+    """Save extracted AI memory (name, preferences, etc.)"""
+    try:
+        if USE_DATABASE:
+            with get_db_connection() as conn:
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO ai_user_memory (session_id, memory_key, memory_value, memory_type, updated_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (session_id, memory_key) 
+                        DO UPDATE SET memory_value = EXCLUDED.memory_value, updated_at = CURRENT_TIMESTAMP
+                    ''', (session_id, key, value, memory_type))
+                    conn.commit()
+                    print(f"[INFO] Saved AI memory: {key} for {session_id}")
+    except Exception as e:
+        print(f"[WARNING] Failed to save AI memory: {e}")
+
+async def get_ai_memory(session_id: str) -> Dict[str, str]:
+    """Get all AI memories for a session"""
+    try:
+        if USE_DATABASE:
+            with get_db_connection() as conn:
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT memory_key, memory_value, memory_type 
+                        FROM ai_user_memory 
+                        WHERE session_id = %s
+                        ORDER BY updated_at DESC
+                    ''', (session_id,))
+                    rows = cursor.fetchall()
+                    return {row[0]: row[1] for row in rows}
+        return {}
+    except Exception as e:
+        print(f"[WARNING] Failed to get AI memory: {e}")
+        return {}
+
+async def get_ai_memory_context(session_id: str) -> str:
+    """Build AI memory context for prompts"""
+    memories = await get_ai_memory(session_id)
+    if not memories:
+        return ""
+    
+    context = "\n🧠 THÔNG TIN ĐÃ GHI NHỚ VỀ NGƯỜI DÙNG:\n"
+    for key, value in memories.items():
+        context += f"  • {key}: {value}\n"
+    context += "\n"
+    return context
+
+async def get_kb_context(kb_name: Optional[str], user_query: str) -> str:
+    """Build knowledge base context for AI"""
+    if not kb_name:
+        return ""
+    
+    kb = kb_manager.get_kb(kb_name)
+    if not kb or not kb.documents:
+        return ""
+    
+    relevant_docs = kb.query(user_query, top_k=3)
+    if not relevant_docs:
+        return ""
+    
+    kb_context = "\n\n" + "="*80 + "\n"
+    kb_context += "📚 TÀI LIỆU TỪ KHO DỮ LIỆU CỦA BẠN\n"
+    kb_context += "="*80 + "\n"
+    kb_context += "Bạn đã tải lên các tài liệu vào kho dữ liệu.\n"
+    kb_context += "Đây là nội dung TEXT từ những tệp đó:\n\n"
+    
+    for i, doc in enumerate(relevant_docs, 1):
+        kb_context += f"--- TÀI LIỆU {i} ---\n"
+        kb_context += doc[:2000] + ("..." if len(doc) > 2000 else "") + "\n\n"
+    
+    kb_context += "="*80 + "\n"
+    kb_context += "⚠️ BẠN CÓ QUYỀN TRUY CẬP vào nội dung trên. Hãy sử dụng nó để trả lời!\n"
+    kb_context += "="*80 + "\n\n"
+    
+    return kb_context
+
+def build_conversation_context(history: List[Dict], max_messages: int = 10) -> str:
+    """Build conversation history context"""
+    if not history:
+        return ""
+    
+    context = "📝 LỊCH SỬ CUỘC TRÒ CHUYỆN:\n"
+    for msg in history[-max_messages:]:
+        role = "👤 Bạn" if msg.get("role") == "user" else "🤖 AI"
+        content = msg.get('content', '')[:500]  # Limit length
+        context += f"{role}: {content}\n\n"
+    
+    return context
 
 # Multi-Knowledge Base System
 class KnowledgeBase:
@@ -120,8 +495,33 @@ class KnowledgeBase:
 
 class KnowledgeBaseManager:
     """Manage multiple knowledge bases"""
+    KB_STORAGE_FILE = "kb_storage.pkl"
+    
     def __init__(self):
         self.knowledge_bases: Dict[str, KnowledgeBase] = {}
+        self.load_from_disk()
+    
+    def save_to_disk(self):
+        """Save all KBs to disk"""
+        try:
+            with open(self.KB_STORAGE_FILE, "wb") as f:
+                pickle.dump(self.knowledge_bases, f)
+            print(f"[INFO] Saved {len(self.knowledge_bases)} KBs to disk")
+        except Exception as e:
+            print(f"[ERROR] Failed to save KBs: {e}")
+    
+    def load_from_disk(self):
+        """Load KBs from disk"""
+        try:
+            if Path(self.KB_STORAGE_FILE).exists():
+                with open(self.KB_STORAGE_FILE, "rb") as f:
+                    self.knowledge_bases = pickle.load(f)
+                print(f"[INFO] Loaded {len(self.knowledge_bases)} KBs from disk")
+            else:
+                print("[INFO] No KB storage file found, starting fresh")
+        except Exception as e:
+            print(f"[ERROR] Failed to load KBs: {e}")
+            self.knowledge_bases = {}
     
     def create_kb(self, name: str) -> KnowledgeBase:
         """Create new knowledge base"""
@@ -129,6 +529,7 @@ class KnowledgeBaseManager:
             return self.knowledge_bases[name]
         kb = KnowledgeBase(name)
         self.knowledge_bases[name] = kb
+        self.save_to_disk()
         return kb
     
     def get_kb(self, name: str) -> Optional[KnowledgeBase]:
@@ -149,6 +550,7 @@ class KnowledgeBaseManager:
         """Delete knowledge base"""
         if name in self.knowledge_bases:
             del self.knowledge_bases[name]
+            self.save_to_disk()
             return True
         return False
 
@@ -178,135 +580,123 @@ async def root():
 @app.post("/api/study-buddy")
 async def study_buddy(files: List[UploadFile] = File(None), request: str = Form(None)):
     """
-    Summarize text or PDF content
+    Summarize and explain content - Vietnamese optimized
     """
     try:
-        # Get text from either request body or uploaded files
         text = ""
         kb_name = None
+        
         if files and len(files) > 0 and files[0] and files[0].filename:
-            # Process multiple files
             file_texts = []
             for file in files:
                 if file and file.filename:
                     file_text = await extract_text_from_file(file)
-                    file_texts.append(f"--- {file.filename} ---\n{file_text}")
+                    file_texts.append(file_text)
             text = "\n\n".join(file_texts)
         elif request:
-            # Parse JSON string if it's a stringified object
             try:
-                import json
                 request_data = json.loads(request)
                 text = request_data.get("text", "")
                 kb_name = request_data.get("knowledge_base")
             except:
                 text = request
-        else:
-            raise HTTPException(status_code=400, detail="Please provide text or upload files")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Vui lòng cung cấp nội dung hoặc tải lên tệp")
+        
+        kb_context = await get_kb_context(kb_name, text)
+        
+        prompt = f"""🎓 BẠN LÀ TRỢ LÝ HỌC TẬP THÔNG MINH
+
+NHIỆM VỤ: Tóm tắt và giải thích nội dung sau bằng tiếng Việt:
+
+{kb_context if kb_context else ""}
+📖 NỘI DUNG:
+{text}
+
+YÊUẨU ĐỊNH DẠNG TÓM TẮT:
+1. 📌 3-5 ĐIỂM CHÍNH
+2. 🔑 KHÁI NIỆM QUAN TRỌNG
+3. 💡 Ứng dụng thực tế
+4. ⚠️ Điểm dễ nhầm lẫn
+
+Hãy trả lời bằng tiếng Việt rõ ràng, dễ hiểu:"""
         
         model = genai.GenerativeModel('gemini-2.5-flash')
-        
-        # Get knowledge base context if specified
-        kb_context = ""
-        if kb_name:
-            kb = kb_manager.get_kb(kb_name)
-            if kb and kb.documents:
-                relevant_docs = kb.query(text, top_k=3)
-                if relevant_docs:
-                    kb_context = "\n\n=== ADDITIONAL REFERENCE MATERIALS FROM KNOWLEDGE BASE ===\n"
-                    for i, doc in enumerate(relevant_docs, 1):
-                        kb_context += f"--- Reference Document {i} ---\n{doc}\n\n"
-                    kb_context += "=== END OF REFERENCE MATERIALS ===\n\n"
-        
-        prompt = f"""You are a helpful study assistant. Please provide a clear, 
-        concise summary of the following content. Break it down into key points 
-        and main ideas.{kb_context}
-
-        {text}
-
-        Summary:"""
-        
         response = model.generate_content(prompt)
         
         return {
             "success": True,
             "summary": response.text,
-            "original_length": len(text),
-            "summary_length": len(response.text)
+            "has_kb": bool(kb_context)
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating summary: {str(e)}")
+        print(f"[ERROR] Study-buddy: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi tóm tắt: {str(e)}")
 
 @app.post("/api/polisher")
 async def polisher(files: List[UploadFile] = File(None), request: str = Form(None)):
     """
-    Rewrite text for Business English
+    Improve text for professional/academic use - Vietnamese optimized
     """
     try:
-        import traceback
-        # Get text from either request body or uploaded files
         text = ""
         kb_name = None
+        
         if files and len(files) > 0 and files[0] and files[0].filename:
-            # Process multiple files
             file_texts = []
             for file in files:
                 if file and file.filename:
                     file_text = await extract_text_from_file(file)
-                    file_texts.append(f"--- {file.filename} ---\n{file_text}")
+                    file_texts.append(file_text)
             text = "\n\n".join(file_texts)
         elif request:
-            # Parse JSON string if it's a stringified object
             try:
-                import json
                 request_data = json.loads(request)
                 text = request_data.get("text", "")
                 kb_name = request_data.get("knowledge_base")
-            except Exception as parse_err:
-                print(f"JSON parse error: {parse_err}, using raw request")
+            except:
                 text = request
-        else:
-            raise HTTPException(status_code=400, detail="Please provide text or upload files")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Vui lòng cung cấp nội dung hoặc tải lên tệp")
+        
+        kb_context = await get_kb_context(kb_name, text)
+        
+        prompt = f"""✨ BẠN LÀ CHUYÊN GIA SỬA CHỮ VĂN BẢN CHUYÊN NGHIỆP
+
+NHIỆM VỤ: Nâng cao chất lượng bản văn sau bằng tiếng Việt:
+
+{kb_context if kb_context else ""}
+📝 VĂN BẢN GỐC:
+{text}
+
+HƯỚNG DẪN:
+✅ Cải thiện từ vựng, ngữ pháp, cấu trúc câu
+✅ Giữ ý tứ gốc nhưng làm rõ hơn
+✅ Tăng tính chuyên nghiệp và thuyết phục
+✅ Loại bỏ lặp từ, phát biểu lủng lẳng
+❌ KHÔNG thay đổi ý chính
+❌ KHÔNG thêm nội dung mới ngoài yêu cầu
+
+Hãy viết lại bản văn nâng cao:"""
         
         model = genai.GenerativeModel('gemini-2.5-flash')
-        
-        # Get knowledge base context if specified
-        kb_context = ""
-        if kb_name:
-            kb = kb_manager.get_kb(kb_name)
-            if kb and kb.documents:
-                relevant_docs = kb.query(text, top_k=3)
-                if relevant_docs:
-                    kb_context = "\n\n=== STYLE REFERENCE FROM KNOWLEDGE BASE ===\n"
-                    kb_context += "Use these documents as style and tone references:\n\n"
-                    for i, doc in enumerate(relevant_docs, 1):
-                        kb_context += f"--- Style Reference {i} ---\n{doc}\n\n"
-                    kb_context += "=== END OF STYLE REFERENCES ===\n\n"
-        
-        prompt = f"""You are a professional business writing expert. Please rewrite 
-        the following text to make it more professional, clear, and suitable for 
-        business communication. Maintain the original meaning but enhance clarity, 
-        tone, and professionalism.{kb_context}
-
-        Original text:
-        {text}
-
-        Professional version:"""
-        
         response = model.generate_content(prompt)
         
         return {
             "success": True,
             "original": text,
-            "polished": response.text
+            "polished": response.text,
+            "has_kb": bool(kb_context)
         }
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print(f"ERROR in polisher endpoint: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error polishing text: {str(e)}")
+        print(f"[ERROR] Polisher: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi trau chuốt: {str(e)}")
 
 @app.post("/api/fact-check")
 async def fact_check(files: List[UploadFile] = File(None), request: str = Form(None)):
@@ -341,17 +731,16 @@ async def fact_check(files: List[UploadFile] = File(None), request: str = Form(N
             tools='google_search_retrieval'
         )
         
-        prompt = f"""Please fact-check the following statement or claim. 
-        Use current, reliable sources to verify the accuracy of the information.
-        Provide:
-        1. Whether the claim is TRUE, FALSE, PARTIALLY TRUE, or UNVERIFIABLE
-        2. Supporting evidence or sources
-        3. Any important context or nuances
+        prompt = f"""🔎 Hãy KIỂM CHỨNG độ chính xác của phát biểu sau (trả lời bằng TIẾNG VIỆT).
+    YÊU CẦU:
+    1) Kết luận: ĐÚNG / SAI / MỘT PHẦN ĐÚNG / KHÔNG XÁC THỰC
+    2) Bằng chứng/sources (nêu rõ nếu do Google Search gợi ý)
+    3) Bối cảnh/ngoại lệ quan trọng
 
-        Claim to fact-check:
-        {text}
+    Phát biểu cần kiểm chứng:
+    {text}
 
-        Fact-check analysis:"""
+    Phân tích kiểm chứng:"""
         
         response = model.generate_content(prompt)
         
@@ -365,14 +754,13 @@ async def fact_check(files: List[UploadFile] = File(None), request: str = Form(N
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             
-            prompt = f"""Please analyze the following statement for factual accuracy 
-            based on your knowledge. Note: This is based on training data, not real-time 
-            search results.
+            prompt = f"""Hãy phân tích độ chính xác của phát biểu sau (tiếng Việt). 
+Lưu ý: đây là phân tích dựa trên kiến thức mô hình, KHÔNG phải tìm kiếm thời gian thực.
 
-            Statement:
-            {text}
+Phát biểu:
+{text}
 
-            Analysis:"""
+Phân tích:"""
             
             response = model.generate_content(prompt)
             
@@ -388,110 +776,107 @@ async def fact_check(files: List[UploadFile] = File(None), request: str = Form(N
 @app.post("/api/chat")
 async def chat(files: List[UploadFile] = File(None), request: str = Form(None)):
     """
-    General chat conversation with AI
+    General chat conversation with persistent memory:
+    - Persistent conversation memory per user
+    - Vietnamese language support
+    - Knowledge base integration
+    - Semantic memory extraction
     """
     try:
-        # Parse request data
+        # Parse request
         text = ""
         history = []
         kb_name = None
+        session_id = None
+        
         if request:
             try:
-                import json
                 request_data = json.loads(request)
-                text = request_data.get("text", "")
+                text = request_data.get("text", "").strip()
                 history = request_data.get("history", [])
                 kb_name = request_data.get("knowledge_base")
+                session_id = request_data.get("session_id")
             except:
-                text = request
+                text = request.strip()
+        
+        # Get or create persistent memory for this session
+        memory = await get_memory(session_id)
         
         # Process uploaded files
+        file_context = ""
         if files and len(files) > 0 and files[0] and files[0].filename:
             file_texts = []
             for file in files:
                 if file and file.filename:
                     file_text = await extract_text_from_file(file)
-                    file_texts.append(f"--- {file.filename} ---\n{file_text}")
-            file_content = "\n\n".join(file_texts)
-        else:
-            file_content = ""
+                    file_texts.append(f"📄 Tệp '{file.filename}':\n{file_text}")
+            file_context = "\n\n".join(file_texts)
         
-        if not text and not file_content:
-            raise HTTPException(status_code=400, detail="Please provide a message or upload files")
+        if not text and not file_context:
+            raise HTTPException(status_code=400, detail="Vui lòng nhập tin nhắn hoặc tải lên tệp")
         
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # Build context - use persistent memory + recent history
+        conversation_context = build_conversation_context(history, max_messages=12)
+        persistent_context = memory.get_recent_context(max_messages=10)
+        kb_context = await get_kb_context(kb_name, text)
         
-        # Build conversation history for context
-        conversation_context = ""
-        if history:
-            for msg in history[-10:]:  # Last 10 messages for context
-                role = "User" if msg.get("role") == "user" else "Assistant"
-                conversation_context += f"{role}: {msg.get('content', '')}\n\n"
+        # Build improved prompt with Vietnamese support and persistent memory
+        system_prompt = """Bạn là một trợ lý AI thông minh, tử tế và có khả năng thấu hiểu.
+
+HƯỚNG DẪN QUAN TRỌNG:
+1. 🗣️ Luôn trả lời bằng TIẾNG VIỆT tự nhiên và dễ hiểu
+2. 💭 Thấu hiểu ý định của người dùng, hỏi làm rõ nếu cần
+3. 📚 Nếu có KHO DỮ LIỆU, hãy ưu tiên sử dụng nó để trả lời
+4. 🧠 GHI NHỚ: Bạn có bộ nhớ liên tục từ các cuộc trò chuyện trước
+5. ❌ KHÔNG nói "Tôi không thể truy cập" - bạn CÓ các tệp ở trên!
+6. 📝 Trả lời súc tích nhưng đầy đủ thông tin"""
         
-        # Get knowledge base context if specified
-        kb_context = ""
-        if kb_name:
-            kb = kb_manager.get_kb(kb_name)
-            if kb and kb.documents:
-                relevant_docs = kb.query(text, top_k=3)
-                if relevant_docs:
-                    kb_context = "\n\n" + "="*80 + "\n"
-                    kb_context += "📚 DOCUMENTS FROM YOUR KNOWLEDGE BASE\n"
-                    kb_context += "="*80 + "\n"
-                    kb_context += "The user has previously uploaded documents to their knowledge base.\n"
-                    kb_context += "The TEXT CONTENT from these uploaded files is provided below.\n"
-                    kb_context += "You HAVE ACCESS to this content and MUST use it to answer questions.\n"
-                    kb_context += "DO NOT say you cannot access files - you CAN read the content below!\n\n"
-                    
-                    for i, doc in enumerate(relevant_docs, 1):
-                        kb_context += f"--- DOCUMENT {i} CONTENT START ---\n"
-                        kb_context += doc + "\n"
-                        kb_context += f"--- DOCUMENT {i} CONTENT END ---\n\n"
-                    
-                    kb_context += "="*80 + "\n"
-                    kb_context += "REMEMBER: The content above IS AVAILABLE to you. Use it to answer!\n"
-                    kb_context += "="*80 + "\n\n"
+        user_message = f"""Tin nhắn của người dùng: {text}"""
         
-        # Build prompt with file content if available
-        file_context = f"\nFile Content:\n{file_content}\n" if file_content else ""
+        if file_context:
+            user_message += f"\n\n📎 Nội dung tệp đính kèm:\n{file_context}"
         
         if kb_context:
-            prompt = f"""You are a helpful AI assistant. The user has uploaded documents to their knowledge base.
-
-{kb_context}
-
-CRITICAL INSTRUCTION: 
-- You HAVE the document content above - it was extracted from the user's uploaded files
-- You CAN and MUST use this information to answer the user's questions
-- DO NOT say "I cannot access files" - you already have the file content above!
-- Read the document content carefully and answer based on what you see there
-
-Previous conversation:
-{conversation_context}
-
-User's question: {text}
-
-Your answer (based on the documents above):"""
-        else:
-            prompt = f"""You are a helpful, friendly AI assistant. Respond naturally and helpfully to the user's message.{file_context}
-{conversation_context}User: {text}
-
-A: """
+            user_message += f"\n{kb_context}"
         
+        # Combine memory contexts - persistent first, then recent
+        if persistent_context or conversation_context:
+            memory_section = ""
+            if persistent_context:
+                memory_section += persistent_context
+            if conversation_context:
+                memory_section += conversation_context
+            user_message = f"{memory_section}\n{user_message}"
         
-        response = model.generate_content(prompt)
+        full_prompt = f"""{system_prompt}
+
+{user_message}
+
+Trả lời của bạn:"""
+        
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(full_prompt)
+        
+        # Save to persistent memory
+        memory.add_message("user", text, kb_name)
+        memory.add_message("assistant", response.text, kb_name)
         
         return {
             "success": True,
-            "response": response.text
+            "response": response.text,
+            "has_kb": bool(kb_context),
+            "has_files": bool(file_context),
+            "session_id": memory.user_id,
+            "memory_messages": len(memory.conversations)
         }
+    
     except HTTPException:
         raise
     except Exception as e:
         import traceback
-        print(f"ERROR in chat endpoint: {str(e)}")
+        print(f"[ERROR] Chat endpoint: {str(e)}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error in chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi trong chat: {str(e)}")
 
 @app.post("/api/personal-doctor")
 async def personal_doctor(
@@ -535,21 +920,18 @@ async def personal_doctor(
                     kb_context += "=== END OF MEDICAL REFERENCES ===\n\n"
         
         # Create prompt for personal doctor AI
-        prompt = f"""You are a knowledgeable personal health advisor and wellness coach. 
-Based on the following health information or question from the user, provide personalized, evidence-based health advice and recommendations.
+        prompt = f"""Bạn là trợ lý sức khỏe & dinh dưỡng (trả lời TIẾNG VIỆT), đưa ra gợi ý dựa trên bằng chứng.
+    HƯỚNG DẪN:
+    - Nhấn mạnh: vấn đề nghiêm trọng cần bác sĩ thăm khám trực tiếp.
+    - Đưa lời khuyên phòng ngừa, lối sống, dinh dưỡng, vận động, giấc ngủ, tinh thần.
+    - Đồng cảm, tránh chẩn đoán chắc chắn; gợi ý gặp chuyên gia khi cần.
+    - Đưa khuyến nghị cụ thể, dễ làm; ưu tiên an toàn.
+    {kb_context}
 
-Important guidelines:
-- Always emphasize that serious medical issues require professional medical consultation
-- Provide general wellness and preventive health tips
-- Consider lifestyle, diet, exercise, and mental health factors
-- Be empathetic and supportive
-- Suggest when professional medical help is needed
-- Provide practical, actionable advice{kb_context}
+    Thông tin/ câu hỏi của người dùng:
+    {text_content}
 
-User's health information or question:
-{text_content}
-
-Please provide comprehensive health advice and personalized recommendations."""
+    Vui lòng đưa ra tư vấn ngắn gọn, dễ hiểu, có gạch đầu dòng nếu cần."""
 
         model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
@@ -585,17 +967,10 @@ class CreateKBRequest(BaseModel):
     name: str
 
 @app.post("/api/knowledge-bases/create")
-async def create_knowledge_base(kb_request: CreateKBRequest = None, request: str = Form(None)):
+async def create_knowledge_base(kb_request: CreateKBRequest):
     """Create a new knowledge base"""
     try:
-        # Support both JSON body and Form data
-        if kb_request:
-            kb_name = kb_request.name.strip()
-        elif request:
-            request_data = json.loads(request)
-            kb_name = request_data.get("name", "").strip()
-        else:
-            raise HTTPException(status_code=400, detail="Please provide knowledge base name")
+        kb_name = kb_request.name.strip()
         
         if not kb_name:
             raise HTTPException(status_code=400, detail="Knowledge base name cannot be empty")
@@ -652,6 +1027,7 @@ async def clear_knowledge_base(request: str = Form(None)):
             raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
         
         kb.clear()
+        kb_manager.save_to_disk()
         
         return {
             "success": True,
@@ -700,6 +1076,9 @@ async def upload_to_knowledge_base(
         
         if uploaded_count == 0:
             raise HTTPException(status_code=400, detail="No valid documents were uploaded")
+        
+        # Save to disk after upload
+        kb_manager.save_to_disk()
         
         return {
             "success": True,
@@ -782,6 +1161,238 @@ async def get_document(kb_name: str, doc_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting document: {str(e)}")
+
+# ==================== Conversation Memory Endpoints ====================
+
+@app.get("/api/memory/{session_id}")
+async def get_memory_endpoint(session_id: str):
+    """Retrieve conversation history for a session"""
+    try:
+        memory = await get_memory(session_id)
+        messages = memory.get_all_messages()
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "message_count": len(messages),
+            "messages": messages,
+            "updated_at": memory.memory_file.stat().st_mtime if memory.memory_file.exists() else None
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi lấy lịch sử: {str(e)}")
+
+@app.delete("/api/memory/{session_id}")
+async def delete_memory_endpoint(session_id: str):
+    """Clear conversation memory for a session (chat history only)"""
+    try:
+        memory = await get_memory(session_id)
+        
+        # Delete from database
+        if USE_DATABASE:
+            with get_db_connection() as conn:
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute('DELETE FROM conversation_messages WHERE session_id = %s', (session_id,))
+                    cursor.execute('DELETE FROM conversation_sessions WHERE session_id = %s', (session_id,))
+                    conn.commit()
+        
+        # Delete file if exists
+        if hasattr(memory, 'memory_file') and memory.memory_file and memory.memory_file.exists():
+            memory.memory_file.unlink()
+        
+        # Clear in-memory conversations
+        memory.conversations = []
+        
+        # Remove from cache
+        if session_id in conversation_memories:
+            del conversation_memories[session_id]
+        
+        return {
+            "success": True,
+            "message": f"✅ Đã xóa lịch sử chat cho phiên {session_id}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi xóa lịch sử: {str(e)}")
+
+@app.delete("/api/settings/clear-all")
+async def clear_all_data(session_id: str, data_type: str):
+    """
+    Clear specific type of data for user settings
+    data_type: 'chat_history', 'ai_memory', 'knowledge_base', 'all'
+    """
+    try:
+        result = {
+            "success": True,
+            "cleared": [],
+            "message": ""
+        }
+        
+        # 1. Xóa lịch sử chat (Chat History)
+        if data_type in ['chat_history', 'all']:
+            memory = await get_memory(session_id)
+            
+            if USE_DATABASE:
+                with get_db_connection() as conn:
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute('DELETE FROM conversation_messages WHERE session_id = %s', (session_id,))
+                        cursor.execute('DELETE FROM conversation_sessions WHERE session_id = %s', (session_id,))
+                        conn.commit()
+            
+            if hasattr(memory, 'memory_file') and memory.memory_file and memory.memory_file.exists():
+                memory.memory_file.unlink()
+            
+            memory.conversations = []
+            if session_id in conversation_memories:
+                del conversation_memories[session_id]
+            
+            result["cleared"].append("chat_history")
+        
+        # 2. Xóa ký ức AI (AI Memory - user preferences, name, etc.)
+        # This would be stored separately from chat history
+        if data_type in ['ai_memory', 'all']:
+            if USE_DATABASE:
+                try:
+                    with get_db_connection() as conn:
+                        if conn:
+                            cursor = conn.cursor()
+                            # Delete from ai_memory table
+                            cursor.execute('DELETE FROM ai_user_memory WHERE session_id = %s', (session_id,))
+                            conn.commit()
+                except Exception as e:
+                    print(f"[WARNING] Could not delete AI memory from DB: {e}")
+            
+            # For now, AI memory is part of conversation context
+            # In future: separate table for extracted facts (name, preferences, etc.)
+            result["cleared"].append("ai_memory")
+        
+        # 3. Xóa kho dữ liệu (Knowledge Base)
+        if data_type in ['knowledge_base', 'all']:
+            # Get all knowledge bases for this session
+            # Note: KB is currently global, but we can filter by session
+            cleared_kbs = []
+            for kb_name in list(kb_manager.knowledge_bases.keys()):
+                try:
+                    kb_manager.delete_kb(kb_name)
+                    cleared_kbs.append(kb_name)
+                except:
+                    pass
+            
+            result["cleared"].append(f"knowledge_base ({len(cleared_kbs)} kho)")
+        
+        # Build message
+        if data_type == 'all':
+            result["message"] = "🗑️ Đã xóa TẤT CẢ dữ liệu: lịch sử chat, ký ức AI, và kho dữ liệu"
+        elif data_type == 'chat_history':
+            result["message"] = "🗑️ Đã xóa lịch sử chat"
+        elif data_type == 'ai_memory':
+            result["message"] = "🗑️ Đã xóa ký ức AI (tên, sở thích,...)"
+        elif data_type == 'knowledge_base':
+            result["message"] = "🗑️ Đã xóa tất cả kho dữ liệu"
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi xóa dữ liệu: {str(e)}")
+
+@app.get("/api/settings/data-stats/{session_id}")
+async def get_data_stats(session_id: str):
+    """Get data statistics for settings page"""
+    try:
+        stats = {
+            "chat_history": {
+                "message_count": 0,
+                "size_bytes": 0,
+                "last_updated": None
+            },
+            "ai_memory": {
+                "memory_count": 0,
+                "items": []
+            },
+            "knowledge_bases": {
+                "kb_count": len(kb_manager.knowledge_bases),
+                "total_documents": sum(len(kb.documents) for kb in kb_manager.knowledge_bases.values()),
+                "kb_names": list(kb_manager.knowledge_bases.keys())
+            }
+        }
+        
+        # Get chat history stats
+        memory = await get_memory(session_id)
+        stats["chat_history"]["message_count"] = len(memory.conversations)
+        
+        if USE_DATABASE:
+            with get_db_connection() as conn:
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT updated_at FROM conversation_sessions 
+                        WHERE session_id = %s
+                    ''', (session_id,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        stats["chat_history"]["last_updated"] = row[0].isoformat()
+        
+        # Get AI memory stats
+        ai_memories = await get_ai_memory(session_id)
+        stats["ai_memory"]["memory_count"] = len(ai_memories)
+        stats["ai_memory"]["items"] = [{"key": k, "value": v} for k, v in ai_memories.items()]
+        
+        return {
+            "success": True,
+            "stats": stats
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi lấy thống kê: {str(e)}")
+
+@app.post("/api/memory/{session_id}/export")
+async def export_memory_endpoint(session_id: str):
+    """Export conversation memory as JSON"""
+    try:
+        memory = await get_memory(session_id)
+        messages = memory.get_all_messages()
+        
+        export_data = {
+            "session_id": session_id,
+            "exported_at": datetime.now().isoformat(),
+            "total_messages": len(messages),
+            "conversations": messages
+        }
+        
+        return {
+            "success": True,
+            "data": export_data,
+            "filename": f"conversation_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi xuất dữ liệu: {str(e)}")
+
+@app.get("/api/memory")
+async def list_all_memories():
+    """List all available conversation sessions"""
+    try:
+        sessions = []
+        if CONVERSATION_STORAGE_DIR.exists():
+            for memory_file in CONVERSATION_STORAGE_DIR.glob("user_*.json"):
+                try:
+                    with open(memory_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        sessions.append({
+                            "session_id": data.get("user_id"),
+                            "message_count": len(data.get("conversations", [])),
+                            "updated_at": data.get("updated_at"),
+                            "file": str(memory_file)
+                        })
+                except:
+                    pass
+        
+        return {
+            "success": True,
+            "total_sessions": len(sessions),
+            "sessions": sessions
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi liệt kê phiên: {str(e)}")
 
 # Vercel serverless function handler
 def handler(request):
