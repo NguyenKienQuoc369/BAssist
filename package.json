@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "uv pip install -r requirements.txt --system && next build",
     "start": "next start",
     "lint": "next lint"
   },

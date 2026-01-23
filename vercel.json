@@ -2,5 +2,5 @@
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" }
   ],
-  "buildCommand": "pip install -r requirements.txt && next build"
+  "buildCommand": "uv pip install -r requirements.txt --system && next build"
 }
