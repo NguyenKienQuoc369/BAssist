@@ -127,11 +127,12 @@ export default function Chat() {
         signal: abortControllerRef.current.signal,
       });
 
-      if (!response.ok) {
-        throw new Error("Không thể gửi tin nhắn");
-      }
-
       const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        const detail = (data && (data.detail || data.error)) || "Không thể gửi tin nhắn";
+        throw new Error(detail);
+      }
       const assistantMessage: Message = {
         role: "assistant",
         content: data.response,
@@ -147,8 +148,9 @@ export default function Chat() {
         setMessages(messages);
         setError("Đã hủy yêu cầu");
       } else {
-        setError("Có lỗi xảy ra. Vui lòng thử lại.");
-        console.error(err);
+        const detail = err?.message || "Có lỗi xảy ra. Vui lòng thử lại.";
+        setError(detail);
+        console.error("Chat error:", err);
       }
     } finally {
       setLoading(false);
