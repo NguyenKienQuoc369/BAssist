@@ -127,10 +127,18 @@ export default function Chat() {
         signal: abortControllerRef.current.signal,
       });
 
-      const data = await response.json();
+      // Robust parsing: handle empty or non-JSON errors from server
+      const rawText = await response.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (parseErr) {
+        // If server returned HTML/plain text, surface it
+        throw new Error(rawText || "Không thể gửi tin nhắn");
+      }
 
       if (!response.ok || !data.success) {
-        const detail = (data && (data.detail || data.error)) || "Không thể gửi tin nhắn";
+        const detail = (data && (data.detail || data.error || data.message)) || rawText || "Không thể gửi tin nhắn";
         throw new Error(detail);
       }
       const assistantMessage: Message = {
