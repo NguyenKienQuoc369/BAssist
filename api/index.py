@@ -22,13 +22,10 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {'.pdf', '.txt', '.md', '.docx', '.jpg', '.jpeg', '.png'}
 
 # Database Configuration (Vercel-compatible)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://localhost/ailearning"  # Local fallback
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Fallback to file-based storage if no database
-USE_DATABASE = "postgresql://" in DATABASE_URL or "localhost" not in DATABASE_URL
+# Fallback to file-based storage if no database URL is provided
+USE_DATABASE = bool(DATABASE_URL)
 if not USE_DATABASE:
     CONVERSATION_STORAGE_DIR = Path("./conversation_memory")
     CONVERSATION_STORAGE_DIR.mkdir(exist_ok=True)
@@ -112,12 +109,19 @@ async def extract_text_from_file(file: UploadFile) -> str:
 @contextmanager
 def get_db_connection():
     """Get database connection (works on Vercel)"""
+    if not USE_DATABASE:
+        # Explicitly yield None so callers can gracefully fall back to file storage
+        yield None
+        return
+
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require' if 'vercel' in DATABASE_URL else 'disable')
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require' if DATABASE_URL and 'vercel' in DATABASE_URL else 'disable')
         yield conn
         conn.close()
     except Exception as e:
         print(f"[WARNING] Database connection failed: {e}")
+        # Yield None so callers can choose file fallback instead of crashing
+        yield None
         yield None
 
 def init_database():
