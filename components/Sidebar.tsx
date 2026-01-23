@@ -12,6 +12,7 @@ import {
   Heart,
   Moon,
   Sun,
+  Settings,
 } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
 
@@ -23,6 +24,7 @@ const navigation = [
   { name: "Sức  khỏe", href: "/personal-doctor", icon: Heart },
   { name: "Kho Dữ Liệu", href: "/knowledge-bases", icon: Database },
   { name: "Kiểm Chứng", href: "/fact-check", icon: CheckCircle },
+  { name: "Cài Đặt", href: "/settings", icon: Settings },
 ];
 
 function SidebarContent() {

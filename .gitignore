@@ -1,9 +1,16 @@
 .next
 node_modules
+
+# Environment variables - NEVER commit these!
 .env
 .env.local
 .env.production
+.env*.local
+
+# Vercel
 .vercel
+
+# Python
 __pycache__
 *.pyc
 *.pyo
@@ -14,3 +21,9 @@ __pycache__
 *.egg-info
 dist
 build
+venv/
+.venv/
+
+# Storage files
+kb_storage.pkl
+*.pkl
