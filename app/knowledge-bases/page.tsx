@@ -19,6 +19,7 @@ interface Document {
 
 export default function KnowledgeBases() {
   const { isDark } = useTheme();
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -30,6 +31,16 @@ export default function KnowledgeBases() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
 
+  const parseResponseSafely = async (response: Response) => {
+    const rawText = await response.text();
+    if (!rawText) return {} as any;
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
+    }
+  };
+
   // Load knowledge bases
   useEffect(() => {
     loadKnowledgeBases();
@@ -38,12 +49,15 @@ export default function KnowledgeBases() {
   const loadKnowledgeBases = async () => {
     try {
       setLoading(true);
-      const response = await fetch("/api/knowledge-bases");
-      const data = await response.json();
+      const response = await fetch(`${apiBase}/api/knowledge-bases`);
+      const data = await parseResponseSafely(response);
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.error || "Không thể tải danh sách kho dữ liệu");
+      }
       setKbs(data.knowledge_bases || []);
       setError("");
     } catch (err) {
-      setError("Không thể tải danh sách kho dữ liệu");
+      setError((err as any)?.message || "Không thể tải danh sách kho dữ liệu");
       console.error(err);
     } finally {
       setLoading(false);
@@ -61,7 +75,7 @@ export default function KnowledgeBases() {
       setCreatingKb(true);
       setError("");
 
-      const response = await fetch("/api/knowledge-bases/create", {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/create`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -70,11 +84,11 @@ export default function KnowledgeBases() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: "Không thể tạo kho dữ liệu" }));
+        const errorData = await parseResponseSafely(response).catch(() => ({ detail: "Không thể tạo kho dữ liệu" }));
         throw new Error(errorData.detail || "Không thể tạo kho dữ liệu");
       }
 
-      const result = await response.json();
+      await parseResponseSafely(response);
       setNewKbName("");
       await loadKnowledgeBases();
     } catch (err: any) {
@@ -94,19 +108,20 @@ export default function KnowledgeBases() {
       const formData = new FormData();
       formData.append("request", JSON.stringify({ name }));
 
-      const response = await fetch("/api/knowledge-bases/delete", {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/delete`, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error("Không thể xóa kho dữ liệu");
+        const errorData = await parseResponseSafely(response).catch(() => ({}));
+        throw new Error(errorData?.detail || errorData?.error || "Không thể xóa kho dữ liệu");
       }
 
       await loadKnowledgeBases();
       setError("");
     } catch (err) {
-      setError("Có lỗi xảy ra khi xóa kho dữ liệu");
+      setError((err as any)?.message || "Có lỗi xảy ra khi xóa kho dữ liệu");
       console.error(err);
     }
   };
@@ -120,19 +135,20 @@ export default function KnowledgeBases() {
       const formData = new FormData();
       formData.append("request", JSON.stringify({ name }));
 
-      const response = await fetch("/api/knowledge-bases/clear", {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/clear`, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error("Không thể xóa tài liệu");
+        const errorData = await parseResponseSafely(response).catch(() => ({}));
+        throw new Error(errorData?.detail || errorData?.error || "Không thể xóa tài liệu");
       }
 
       await loadKnowledgeBases();
       setError("");
     } catch (err) {
-      setError("Có lỗi xảy ra khi xóa tài liệu");
+      setError((err as any)?.message || "Có lỗi xảy ra khi xóa tài liệu");
       console.error(err);
     }
   };
@@ -150,21 +166,22 @@ export default function KnowledgeBases() {
       
       formData.append("request", JSON.stringify({ name: kbName }));
 
-      const response = await fetch("/api/knowledge-bases/upload", {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/upload`, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error("Không thể upload file");
+        const errorData = await parseResponseSafely(response).catch(() => ({}));
+        throw new Error(errorData?.detail || errorData?.error || "Không thể upload file");
       }
 
-      const data = await response.json();
+      const data = await parseResponseSafely(response);
       await loadKnowledgeBases();
       setError("");
       alert(`Đã upload thành công ${data.uploaded_count} tài liệu!`);
     } catch (err) {
-      setError("Có lỗi xảy ra khi upload file");
+      setError((err as any)?.message || "Có lỗi xảy ra khi upload file");
       console.error(err);
     } finally {
       setUploadingTo("");
@@ -175,14 +192,16 @@ export default function KnowledgeBases() {
     setViewingKb(kbName);
     setLoadingDocs(true);
     try {
-      const response = await fetch(`/api/knowledge-bases/${encodeURIComponent(kbName)}/documents`);
-      const data = await response.json();
-      if (data.success) {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/${encodeURIComponent(kbName)}/documents`);
+      const data = await parseResponseSafely(response);
+      if (response.ok && data.success) {
         setDocuments(data.documents || []);
+      } else {
+        throw new Error(data?.detail || data?.error || "Không thể tải danh sách tài liệu");
       }
     } catch (err) {
       console.error("Error loading documents:", err);
-      setError("Không thể tải danh sách tài liệu");
+      setError((err as any)?.message || "Không thể tải danh sách tài liệu");
     } finally {
       setLoadingDocs(false);
     }
@@ -192,7 +211,7 @@ export default function KnowledgeBases() {
     if (!confirm("Bạn có chắc muốn xóa tài liệu này?")) return;
     
     try {
-      const response = await fetch(`/api/knowledge-bases/${encodeURIComponent(kbName)}/documents/${docId}`, {
+      const response = await fetch(`${apiBase}/api/knowledge-bases/${encodeURIComponent(kbName)}/documents/${docId}`, {
         method: "POST",
       });
       
@@ -204,16 +223,16 @@ export default function KnowledgeBases() {
       }
     } catch (err) {
       console.error("Error deleting document:", err);
-      setError("Không thể xóa tài liệu");
+      setError((err as any)?.message || "Không thể xóa tài liệu");
     }
   };
 
   const handleDownloadDocument = async (kbName: string, docId: number, filename: string) => {
     try {
-      const response = await fetch(`/api/knowledge-bases/${encodeURIComponent(kbName)}/documents/${docId}`);
-      const data = await response.json();
+      const response = await fetch(`${apiBase}/api/knowledge-bases/${encodeURIComponent(kbName)}/documents/${docId}`);
+      const data = await parseResponseSafely(response);
       
-      if (data.success && data.document) {
+      if (response.ok && data.success && data.document) {
         // Create a blob and download
         const blob = new Blob([data.document.text], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
@@ -227,7 +246,7 @@ export default function KnowledgeBases() {
       }
     } catch (err) {
       console.error("Error downloading document:", err);
-      setError("Không thể tải về tài liệu");
+      setError((err as any)?.message || "Không thể tải về tài liệu");
     }
   };
 

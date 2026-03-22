@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 import os
@@ -13,12 +14,13 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 import hashlib
+import importlib
 from contextlib import contextmanager
 
 # psycopg2 is optional; if missing we fall back to file storage
 try:
-    import psycopg2
-    from psycopg2.extras import Json
+    psycopg2 = importlib.import_module("psycopg2")
+    Json = importlib.import_module("psycopg2.extras").Json
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False

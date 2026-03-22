@@ -23,11 +23,22 @@ interface DataStats {
 
 export default function Settings() {
   const { isDark } = useTheme();
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
   const [stats, setStats] = useState<DataStats>({});
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const parseResponseSafely = async (response: Response) => {
+    const rawText = await response.text();
+    if (!rawText) return {} as any;
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
+    }
+  };
 
   // Get session_id from localStorage
   const getSessionId = () => {
@@ -47,14 +58,17 @@ export default function Settings() {
     setLoading(true);
     try {
       const sessionId = getSessionId();
-      const response = await fetch(`/api/settings/data-stats/${sessionId}`);
-      const data = await response.json();
+      const response = await fetch(`${apiBase}/api/settings/data-stats/${sessionId}`);
+      const data = await parseResponseSafely(response);
       
-      if (data.success) {
+      if (response.ok && data.success) {
         setStats(data.stats || {});
+      } else {
+        throw new Error(data?.detail || data?.error || "Không thể tải thống kê");
       }
     } catch (error) {
       console.error("Failed to load stats:", error);
+      setMessage({ type: "error", text: (error as any)?.message || "Không thể tải thống kê" });
     } finally {
       setLoading(false);
     }
@@ -71,20 +85,20 @@ export default function Settings() {
     
     try {
       const sessionId = getSessionId();
-      const response = await fetch(`/api/settings/clear-all?session_id=${sessionId}&data_type=${dataType}`, {
+      const response = await fetch(`${apiBase}/api/settings/clear-all?session_id=${sessionId}&data_type=${dataType}`, {
         method: "DELETE",
       });
       
-      const data = await response.json();
+      const data = await parseResponseSafely(response);
       
-      if (data.success) {
+      if (response.ok && data.success) {
         setMessage({ type: "success", text: `Đã xóa ${getDataTypeName(dataType)} thành công!` });
         await loadStats(); // Reload stats
       } else {
-        setMessage({ type: "error", text: data.error || "Có lỗi xảy ra" });
+        setMessage({ type: "error", text: data?.detail || data?.error || "Có lỗi xảy ra" });
       }
     } catch (error) {
-      setMessage({ type: "error", text: "Không thể kết nối đến server" });
+      setMessage({ type: "error", text: (error as any)?.message || "Không thể kết nối đến server" });
     } finally {
       setDeleting(null);
       setTimeout(() => setMessage(null), 5000);

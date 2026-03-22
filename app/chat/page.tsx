@@ -42,6 +42,16 @@ export default function Chat() {
   const loadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { addHistory } = useChatHistory();
 
+  const parseResponseSafely = async (response: Response) => {
+    const rawText = await response.text();
+    if (!rawText) return {} as any;
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
+    }
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -54,9 +64,9 @@ export default function Chat() {
     // Load knowledge bases
     const loadKbs = async () => {
       try {
-        const response = await fetch("/api/knowledge-bases");
-        const data = await response.json();
-        if (data.success) {
+        const response = await fetch(`${apiBase}/api/knowledge-bases`);
+        const data = await parseResponseSafely(response);
+        if (response.ok && data.success) {
           setKnowledgeBases(data.knowledge_bases || []);
         }
       } catch (err) {

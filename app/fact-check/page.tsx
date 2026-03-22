@@ -9,11 +9,22 @@ import { CheckCircle, Send, Upload } from "lucide-react";
 
 export default function FactCheck() {
   const { isDark } = useTheme();
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
   const [claim, setClaim] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const parseResponseSafely = async (response: Response) => {
+    const rawText = await response.text();
+    if (!rawText) return {} as any;
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
+    }
+  };
 
   const handleFactCheck = async () => {
     if (!claim.trim() && files.length === 0) {
@@ -35,19 +46,18 @@ export default function FactCheck() {
         formData.append("request", JSON.stringify({ text: claim }));
       }
 
-      const response = await fetch("/api/fact-check", {
+      const response = await fetch(`${apiBase}/api/fact-check`, {
         method: "POST",
         body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to fact-check");
+      const data = await parseResponseSafely(response);
+      if (!response.ok || !data.success) {
+        throw new Error(data?.detail || data?.error || "Failed to fact-check");
       }
-
-      const data = await response.json();
       setResult(data.fact_check_result);
-    } catch (err) {
-      setError("Có lỗi xảy ra khi kiểm chứng. Vui lòng thử lại.");
+    } catch (err: any) {
+      setError(err?.message || "Có lỗi xảy ra khi kiểm chứng. Vui lòng thử lại.");
       console.error(err);
     } finally {
       setLoading(false);

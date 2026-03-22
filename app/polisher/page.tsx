@@ -21,6 +21,7 @@ interface KnowledgeBase {
 
 export default function Polisher() {
   const { isDark } = useTheme();
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -37,6 +38,16 @@ export default function Polisher() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const { addHistory } = useChatHistory();
 
+  const parseResponseSafely = async (response: Response) => {
+    const rawText = await response.text();
+    if (!rawText) return {} as any;
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
+    }
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -48,9 +59,9 @@ export default function Polisher() {
   useEffect(() => {
     const loadKbs = async () => {
       try {
-        const response = await fetch("/api/knowledge-bases");
-        const data = await response.json();
-        if (data.success) {
+        const response = await fetch(`${apiBase}/api/knowledge-bases`);
+        const data = await parseResponseSafely(response);
+        if (response.ok && data.success) {
           setKnowledgeBases(data.knowledge_bases || []);
         }
       } catch (err) {
@@ -96,17 +107,16 @@ export default function Polisher() {
         }));
       }
 
-      const response = await fetch("/api/polisher", {
+      const response = await fetch(`${apiBase}/api/polisher`, {
         method: "POST",
         body: formData,
         signal: abortControllerRef.current.signal,
       });
 
-      if (!response.ok) {
-        throw new Error("Không thể trau chuốt văn bản");
+      const data = await parseResponseSafely(response);
+      if (!response.ok || !data.success) {
+        throw new Error(data?.detail || data?.error || "Không thể trau chuốt văn bản");
       }
-
-      const data = await response.json();
       const assistantMessage: Message = {
         role: "assistant",
         content: data.polished_text,
@@ -122,7 +132,7 @@ export default function Polisher() {
         setMessages(messages);
         setError("Đã hủy yêu cầu");
       } else {
-        setError("Có lỗi xảy ra. Vui lòng thử lại.");
+        setError(err?.message || "Có lỗi xảy ra. Vui lòng thử lại.");
         console.error(err);
       }
     } finally {
