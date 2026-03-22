@@ -22,6 +22,7 @@ interface KnowledgeBase {
 export default function Chat() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ""; // Allows pointing to external FastAPI when not served by Next dev
+  const isProduction = process.env.NODE_ENV === "production";
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -48,6 +49,13 @@ export default function Chat() {
     try {
       return JSON.parse(rawText);
     } catch {
+      const looksLikeHtml = rawText.trim().startsWith("<") || rawText.includes("<html");
+      if (looksLikeHtml) {
+        if (response.status === 404) {
+          throw new Error("API không tồn tại (404). Hãy kiểm tra `NEXT_PUBLIC_API_BASE` trên Vercel trỏ tới backend FastAPI.");
+        }
+        throw new Error(`Server trả về HTML thay vì JSON (status ${response.status}). Kiểm tra URL backend/API proxy.`);
+      }
       throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
     }
   };
@@ -61,6 +69,10 @@ export default function Chat() {
   }, [messages]);
 
   useEffect(() => {
+    if (isProduction && !apiBase) {
+      setError("Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production.");
+    }
+
     // Load knowledge bases
     const loadKbs = async () => {
       try {
@@ -138,18 +150,10 @@ export default function Chat() {
         signal: abortControllerRef.current.signal,
       });
 
-      // Robust parsing: handle empty or non-JSON errors from server
-      const rawText = await response.text();
-      let data: any = {};
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch (parseErr) {
-        // If server returned HTML/plain text, surface it
-        throw new Error(rawText || "Không thể gửi tin nhắn");
-      }
+      const data = await parseResponseSafely(response);
 
       if (!response.ok || !data.success) {
-        const detail = (data && (data.detail || data.error || data.message)) || rawText || "Không thể gửi tin nhắn";
+        const detail = (data && (data.detail || data.error || data.message)) || "Không thể gửi tin nhắn";
         throw new Error(detail);
       }
       const assistantMessage: Message = {

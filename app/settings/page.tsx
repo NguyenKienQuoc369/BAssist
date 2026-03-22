@@ -24,6 +24,7 @@ interface DataStats {
 export default function Settings() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+  const isProduction = process.env.NODE_ENV === "production";
   const [stats, setStats] = useState<DataStats>({});
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -75,8 +76,14 @@ export default function Settings() {
   };
 
   useEffect(() => {
+    if (isProduction && !apiBase) {
+      setMessage({ type: "error", text: "Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production." });
+      setLoading(false);
+      return;
+    }
+
     loadStats();
-  }, []);
+  }, [apiBase, isProduction]);
 
   // Delete data
   const handleDelete = async (dataType: string) => {

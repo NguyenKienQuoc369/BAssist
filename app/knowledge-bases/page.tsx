@@ -20,6 +20,7 @@ interface Document {
 export default function KnowledgeBases() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+  const isProduction = process.env.NODE_ENV === "production";
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -43,8 +44,14 @@ export default function KnowledgeBases() {
 
   // Load knowledge bases
   useEffect(() => {
+    if (isProduction && !apiBase) {
+      setError("Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production.");
+      setLoading(false);
+      return;
+    }
+
     loadKnowledgeBases();
-  }, []);
+  }, [apiBase, isProduction]);
 
   const loadKnowledgeBases = async () => {
     try {

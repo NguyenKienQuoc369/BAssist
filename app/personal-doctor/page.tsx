@@ -22,6 +22,7 @@ interface KnowledgeBase {
 export default function PersonalDoctor() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+  const isProduction = process.env.NODE_ENV === "production";
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -57,6 +58,11 @@ export default function PersonalDoctor() {
   }, [messages]);
 
   useEffect(() => {
+    if (isProduction && !apiBase) {
+      setError("Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production.");
+      return;
+    }
+
     const loadKbs = async () => {
       try {
         const response = await fetch(`${apiBase}/api/knowledge-bases`);
@@ -69,7 +75,7 @@ export default function PersonalDoctor() {
       }
     };
     loadKbs();
-  }, []);
+  }, [apiBase, isProduction]);
 
   const handleSend = async () => {
     if (!input.trim() && files.length === 0) {

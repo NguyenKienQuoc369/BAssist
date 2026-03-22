@@ -22,6 +22,7 @@ interface KnowledgeBase {
 export default function StudyBuddy() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+  const isProduction = process.env.NODE_ENV === "production";
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -57,6 +58,11 @@ export default function StudyBuddy() {
   }, [messages]);
 
   useEffect(() => {
+    if (isProduction && !apiBase) {
+      setError("Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production.");
+      return;
+    }
+
     const loadKbs = async () => {
       try {
         const response = await fetch(`${apiBase}/api/knowledge-bases`);
@@ -69,7 +75,7 @@ export default function StudyBuddy() {
       }
     };
     loadKbs();
-  }, []);
+  }, [apiBase, isProduction]);
 
   const handleSend = async () => {
     if (!input.trim() && files.length === 0) {

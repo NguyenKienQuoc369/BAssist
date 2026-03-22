@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
@@ -10,6 +10,7 @@ import { CheckCircle, Send, Upload } from "lucide-react";
 export default function FactCheck() {
   const { isDark } = useTheme();
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+  const isProduction = process.env.NODE_ENV === "production";
   const [claim, setClaim] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [result, setResult] = useState("");
@@ -25,6 +26,12 @@ export default function FactCheck() {
       throw new Error(rawText || "Server trả về dữ liệu không hợp lệ");
     }
   };
+
+  useEffect(() => {
+    if (isProduction && !apiBase) {
+      setError("Thiếu cấu hình `NEXT_PUBLIC_API_BASE` trên môi trường production.");
+    }
+  }, [apiBase, isProduction]);
 
   const handleFactCheck = async () => {
     if (!claim.trim() && files.length === 0) {
