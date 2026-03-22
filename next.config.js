@@ -1,10 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
   async rewrites() {
-    // On Vercel, set NEXT_PUBLIC_API_BASE to external backend; disable rewrites there.
-    if (process.env.NEXT_PUBLIC_API_BASE) {
+    // Only proxy API in local development when no external backend is configured.
+    if (process.env.NODE_ENV !== 'development' || process.env.NEXT_PUBLIC_API_BASE) {
       return [];
     }
 
